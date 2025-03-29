@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"gator/internal/database"
+	"gator/internal/rss"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 	"time"
@@ -74,9 +75,53 @@ func HandlerUsers(s *state.State, cmd state.Command) error {
 	return nil
 }
 
+func HandlerAgg(s *state.State, cmd state.Command) error {
+	feed, err := rss.FetchFeed(context.Background(), "https://www.wagslane.dev/index.xml")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("* %v feed\n", feed)
+	return nil
+}
+
+func HandlerAddFeed(s *state.State, cmd state.Command) error {
+	if len(cmd.Args) < 2 {
+		return fmt.Errorf("not sufficient arguments. The add feed handler expects two arguments - name and url")
+	}
+	usrName := s.Config.CurrentUserName
+	usr, err := s.Queries.GetUser(context.Background(), usrName)
+	if err != nil {
+		return err
+	}
+	id := usr.ID
+	setFeed, err := s.Queries.SetFeed(context.Background(), database.SetFeedParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Name:      cmd.Args[0],
+		Url:       cmd.Args[1],
+		UserID:    id,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%v\n", setFeed)
+	return nil
+}
+
+func HandlerFeeds(s *state.State, cmd state.Command) error {
+	feeds, err := s.Queries.GetFeeds(context.Background())
+	if err != nil {
+		return err
+	}
+	for _, feed := range feeds {
+		fmt.Printf("%s\t%s\t%s\n", feed.Feedname, feed.Feedurl, feed.Username)
+	}
+	return nil
+}
+
 func main() {
 	gatorConfig := config.Read()
-	fmt.Printf("Gator Config: %v\n", *gatorConfig)
 	db, err := sql.Open("postgres", gatorConfig.DbUrl)
 	if err != nil {
 		fmt.Println("couldn't connect to db")
@@ -90,6 +135,9 @@ func main() {
 	commands.Register("register", HandlerRegister)
 	commands.Register("reset", HandlerReset)
 	commands.Register("users", HandlerUsers)
+	commands.Register("agg", HandlerAgg)
+	commands.Register("addfeed", HandlerAddFeed)
+	commands.Register("feeds", HandlerFeeds)
 	argsWithoutProg := os.Args[1:]
 	if len(argsWithoutProg) < 1 {
 		fmt.Println("Not enough arguments")
