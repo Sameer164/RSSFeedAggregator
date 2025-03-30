@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"gator/internal/config"
 	"gator/internal/database"
@@ -14,7 +15,7 @@ import (
 func middlewareLoggedIn(handler func(s *state.State, cmd state.Command, user database.User) error) func(s *state.State, cmd state.Command) error {
 	return func(s *state.State, cmd state.Command) error {
 		if s.Config.CurrentUserName == "" {
-			return fmt.Errorf("no users are currently logged in")
+			return fmt.Errorf("no users are currently logged , there are no users in the database, so register one before you login")
 		}
 		usr, err := s.Queries.GetUser(context.Background(), s.Config.CurrentUserName)
 		if err != nil {
@@ -24,11 +25,15 @@ func middlewareLoggedIn(handler func(s *state.State, cmd state.Command, user dat
 	}
 }
 
-func HandlerLogin(s *state.State, cmd state.Command, user database.User) error {
+func HandlerLogin(s *state.State, cmd state.Command) error {
 	if len(cmd.Args) == 0 {
 		return fmt.Errorf("not sufficient arguments. The login handler expects a single argument, the username")
 	}
-	err := s.Config.SetUser(cmd.Args[0])
+	usr, err := s.Queries.GetUser(context.Background(), cmd.Args[0])
+	if err != nil {
+		return fmt.Errorf("user %s not found in the database\n", cmd.Args[0])
+	}
+	err = s.Config.SetUser(usr.Name)
 	if err != nil {
 		return fmt.Errorf("couldn't set the user")
 	}
@@ -58,6 +63,10 @@ func HandlerReset(s *state.State, cmd state.Command) error {
 	if err != nil {
 		return fmt.Errorf("error deleting all users\n.")
 	}
+	err = s.Config.SetUser("")
+	if err != nil {
+		return fmt.Errorf("couldn't clear the user in the config. May not work properly.\n")
+	}
 	return nil
 }
 
@@ -78,13 +87,26 @@ func HandlerUsers(s *state.State, cmd state.Command) error {
 	return nil
 }
 
-func HandlerAgg(s *state.State, cmd state.Command) error {
-	feed, err := rss.FetchFeed(context.Background(), "https://www.wagslane.dev/index.xml")
-	if err != nil {
-		return err
+func HandlerAgg(s *state.State, cmd state.Command, usr database.User) error {
+	if len(cmd.Args) != 1 {
+		return fmt.Errorf("not sufficient arguments. The aggregate handler expects a single argument - the duration to fetch feeds on")
 	}
-	fmt.Printf("* %v feed\n", feed)
-	return nil
+	timeInterval, _ := time.ParseDuration(cmd.Args[0])
+	ticker := time.NewTicker(timeInterval)
+	for ; ; <-ticker.C {
+		feed, err := s.Queries.GetNextFeedToFetch(context.Background(), usr.ID)
+		if err != nil {
+			return fmt.Errorf("couldn't fetch next feed for user %s\n.", usr.ID)
+		}
+		err = scrapeFeeds(feed.Url)
+		if err != nil {
+			return fmt.Errorf("couldn't fetch feed with the url %s for user %s\n.", feed.Url, usr.ID)
+		}
+		_, err = s.Queries.MarkFeedFetched(context.Background(), database.MarkFeedFetchedParams{ID: feed.ID, LastFetchedAt: sql.NullTime{Time: time.Now().UTC(), Valid: true}})
+		if err != nil {
+			return fmt.Errorf("couldn't mark feed for user %s\n.", usr.ID)
+		}
+	}
 }
 
 func HandlerAddFeed(s *state.State, cmd state.Command, usr database.User) error {
@@ -176,6 +198,18 @@ func HandlerUnfollow(s *state.State, cmd state.Command, user database.User) erro
 	if err != nil {
 		fmt.Println("Couldn't unfollow " + cmd.Args[0])
 		return err
+	}
+	return nil
+}
+
+func scrapeFeeds(url string) error {
+	feed, err := rss.FetchFeed(context.Background(), url)
+	if err != nil {
+		return fmt.Errorf("couldn't fetch feed\n.")
+	}
+	fmt.Printf("%s\n", feed.Channel.Title)
+	for _, item := range feed.Channel.Item {
+		fmt.Printf("\t* %s\n", item.Title)
 	}
 	return nil
 }

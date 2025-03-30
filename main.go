@@ -24,11 +24,11 @@ func main() {
 	s := &state.State{Config: gatorConfig, Queries: dbQueries}
 
 	commands := &state.Commands{Commands: make(map[string]func(*state.State, state.Command) error)}
-	commands.Register("login", middlewareLoggedIn(HandlerLogin))
+	commands.Register("login", HandlerLogin)
 	commands.Register("register", HandlerRegister)
 	commands.Register("reset", HandlerReset)
 	commands.Register("users", HandlerUsers)
-	commands.Register("agg", HandlerAgg)
+	commands.Register("agg", middlewareLoggedIn(HandlerAgg))
 	commands.Register("addfeed", middlewareLoggedIn(HandlerAddFeed))
 	commands.Register("feeds", HandlerFeeds)
 	commands.Register("follow", middlewareLoggedIn(HandlerFollow))
