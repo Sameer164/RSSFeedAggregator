@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"gator/internal/config"
 	"gator/internal/database"
 	"gator/internal/rss"
 	"gator/internal/state"
 	"github.com/google/uuid"
+	"strconv"
 	"time"
 )
 
@@ -98,13 +100,30 @@ func HandlerAgg(s *state.State, cmd state.Command, usr database.User) error {
 		if err != nil {
 			return fmt.Errorf("couldn't fetch next feed for user %s\n.", usr.ID)
 		}
-		err = scrapeFeeds(feed.Url)
-		if err != nil {
-			return fmt.Errorf("couldn't fetch feed with the url %s for user %s\n.", feed.Url, usr.ID)
-		}
 		_, err = s.Queries.MarkFeedFetched(context.Background(), database.MarkFeedFetchedParams{ID: feed.ID, LastFetchedAt: sql.NullTime{Time: time.Now().UTC(), Valid: true}})
 		if err != nil {
 			return fmt.Errorf("couldn't mark feed for user %s\n.", usr.ID)
+		}
+
+		fetchedFeed, err := rss.FetchFeed(context.Background(), feed.Url)
+		if err != nil {
+			return fmt.Errorf("couldn't fetch feed\n.")
+		}
+		for _, post := range fetchedFeed.Channel.Item {
+			publishedDateParsed, err := time.Parse("Mon, 02 Jan 2006 15:04:05 -0700", post.PubDate)
+			if err != nil {
+				return fmt.Errorf("couldn't parse published date\n.")
+			}
+			publishedDateParsed = publishedDateParsed.UTC()
+			_, err = s.Queries.CreatePost(context.Background(), database.CreatePostParams{ID: uuid.New(),
+				CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Title: post.Title,
+				Url: post.Link, Description: post.Description, PublishedAt: publishedDateParsed, FeedID: feed.ID})
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				return fmt.Errorf("couldn't create post for user %s\n.", usr.ID)
+			}
 		}
 	}
 }
@@ -202,14 +221,21 @@ func HandlerUnfollow(s *state.State, cmd state.Command, user database.User) erro
 	return nil
 }
 
-func scrapeFeeds(url string) error {
-	feed, err := rss.FetchFeed(context.Background(), url)
-	if err != nil {
-		return fmt.Errorf("couldn't fetch feed\n.")
+func HandlerBrowse(s *state.State, cmd state.Command, user database.User) error {
+	var limit int32 = 2
+	if len(cmd.Args) == 1 {
+		v, err := strconv.ParseInt(cmd.Args[0], 10, 64)
+		if err != nil {
+			return err
+		}
+		limit = int32(v)
 	}
-	fmt.Printf("%s\n", feed.Channel.Title)
-	for _, item := range feed.Channel.Item {
-		fmt.Printf("\t* %s\n", item.Title)
+	posts, err := s.Queries.GetPostsForUser(context.Background(), database.GetPostsForUserParams{ID: user.ID, Limit: limit})
+	if err != nil {
+		return err
+	}
+	for _, post := range posts {
+		fmt.Printf("* %s\n", post.Title)
 	}
 	return nil
 }
